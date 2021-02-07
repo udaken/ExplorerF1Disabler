@@ -1,14 +1,16 @@
 ﻿#include "framework.h"
 #include "resource.h"
 
-#include <assert.h> 
+#include <shlobj.h>
+
+#include <assert.h>
+#include <wil/com.h>
 #include <wil/resource.h>
 #include <wil/result.h>
 
 #pragma comment(lib, "Version.lib")
 
-#pragma comment(linker, \
-    "/manifestdependency:\"type='win32' \
+#pragma comment(linker, "/manifestdependency:\"type='win32' \
     name='Microsoft.Windows.Common-Controls' \
     version='6.0.0.0' \
     processorArchitecture='*' \
@@ -16,17 +18,19 @@
     language='*'\"")
 
 #define MAX_LOADSTRING 100
+#define WM_NOTIFYICON (WM_USER + 100)
 
-#define WM_NOTIFYICON (WM_USER+100)
-constexpr auto NOTIFY_UID = 1;
-constexpr auto szWindowClass = L"{B9EA841C-34B1-467B-8792-F7E2AE21D640}";
+#define CATCH_SHOW_MSGBOX()                                                         \
+    catch (const wil::ResultException &e)                                           \
+    {                                                                               \
+        wchar_t message[2048]{};                                                    \
+        wil::GetFailureLogString(message, ARRAYSIZE(message), e.GetFailureInfo());  \
+        MessageBox(hWnd, message, g_szTitle, MB_ICONERROR);                         \
+    }
 
-HINSTANCE g_hInst;
-HHOOK g_hook;
-WCHAR g_szTitle[MAX_LOADSTRING];
 
-LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
-INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
+using namespace std::string_literals;
+using namespace std::string_view_literals;
 
 namespace my
 {
@@ -38,13 +42,30 @@ namespace my
     inline std::wstring GetClassName(HWND hwnd)
     {
         WCHAR className[256]{};
-        unsigned len = GetClassName(hwnd, className, ARRAYSIZE(className));
+        unsigned len = ::GetClassName(hwnd, className, ARRAYSIZE(className));
         return { className, len };
     }
-}
+    inline std::wstring GetModuleFileName()
+    {
+        WCHAR fileName[256]{};
+        unsigned len = ::GetModuleFileName(nullptr, fileName, ARRAYSIZE(fileName));
+        return { fileName, len };
+    }
+} // namespace my
+
+HINSTANCE g_hInst;
+HHOOK g_hook;
+WCHAR g_szTitle[MAX_LOADSTRING];
+HWND g_hwnd;
+
+LRESULT CALLBACK wndProc(HWND, UINT, WPARAM, LPARAM) noexcept;
+INT_PTR CALLBACK about(HWND, UINT, WPARAM, LPARAM) noexcept;
+
+constexpr auto NOTIFY_UID = 1;
+constexpr auto szWindowClass = L"{B9EA841C-34B1-467B-8792-F7E2AE21D640}";
 
 auto constexpr targetClassName{ L"CabinetWClass" };
-//auto constexpr targetClassName{ L"Notepad" };
+// auto constexpr targetClassName{ L"Notepad" };
 
 struct WindowInfo
 {
@@ -110,9 +131,10 @@ void uninstallHook()
 
 void installHook()
 {
-    if (g_hook) uninstallHook();
+    if (g_hook)
+        uninstallHook();
 
-    g_hook = { SetWindowsHookEx(WH_KEYBOARD_LL, &lowLevelKeyboardProc, nullptr, 0/*global*/) };
+    g_hook = { SetWindowsHookEx(WH_KEYBOARD_LL, &lowLevelKeyboardProc, nullptr, 0 /*global*/) };
     THROW_LAST_ERROR_IF_NULL(g_hook);
 }
 
@@ -151,7 +173,7 @@ ATOM registerMyClass(HINSTANCE hInstance)
     WNDCLASSEXW wcex{
         sizeof(WNDCLASSEX),
         CS_HREDRAW | CS_VREDRAW,
-         &WndProc,
+        &wndProc,
     };
 
     wcex.hInstance = hInstance;
@@ -162,12 +184,11 @@ ATOM registerMyClass(HINSTANCE hInstance)
     return RegisterClassExW(&wcex);
 }
 
-
-int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
-    _In_opt_ HINSTANCE hPrevInstance,
-    _In_ LPWSTR    lpCmdLine,
-    _In_ int       nCmdShow)
+int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine,
+                      _In_ int nCmdShow)
 {
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
     UNREFERENCED_PARAMETER(nCmdShow);
@@ -177,10 +198,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     LoadStringW(hInstance, IDS_APP_TITLE, g_szTitle, MAX_LOADSTRING);
 
     wcscat_s(g_szTitle,
-#if _M_X64 
-    L" (64bit)"
+#if _M_X64
+             L" (64bit)"
 #else
-    L" (32bit)"
+             L" (32bit)"
 #endif
     );
 
@@ -190,9 +211,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         ::MessageBox(nullptr, L"Another instance is already running.", g_szTitle, MB_ICONEXCLAMATION);
         return 0;
     }
+    auto hr{ CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
 
     /*
-    auto hr{ CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
 
     SHELLEXECUTEINFO sei{
         sizeof(SHELLEXECUTEINFO),
@@ -208,8 +229,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     registerMyClass(hInstance);
 
-    HWND hWnd = CreateWindowW(szWindowClass, g_szTitle, 0,
-        CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, nullptr, nullptr, hInstance, nullptr);
+    HWND hWnd = CreateWindowW(szWindowClass, g_szTitle, 0, CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, nullptr, nullptr,
+                              hInstance, nullptr);
 
     if (!hWnd)
     {
@@ -233,7 +254,23 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     return (int)msg.wParam;
 }
 
-LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+void registerToShortcut(HWND hWnd)
+try
+{
+    WCHAR targetPath[MAX_PATH]{};
+    THROW_IF_FAILED(E_FAIL);
+    THROW_IF_WIN32_BOOL_FALSE(SHGetSpecialFolderPath(hWnd, targetPath, CSIDL_STARTUP, FALSE));
+    StringCchCat(targetPath, ARRAYSIZE(targetPath), (L"\\"s + g_szTitle + L".lnk"s).c_str());
+
+    auto pShellLink{ wil::CoCreateInstance<IShellLink>(CLSID_ShellLink) };
+    auto pPersistFile{ pShellLink.query<IPersistFile>() };
+
+    THROW_IF_FAILED(pShellLink->SetPath(my::GetModuleFileName().c_str()));
+    THROW_IF_FAILED(pPersistFile->Save(targetPath, TRUE));
+}
+CATCH_SHOW_MSGBOX()
+
+LRESULT CALLBACK wndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) noexcept
 {
     static UINT s_uTaskbarRestart;
     static HMENU s_menu = nullptr;
@@ -241,6 +278,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message)
     {
     case WM_CREATE:
+        g_hwnd = hWnd;
         s_uTaskbarRestart = RegisterWindowMessage(L"TaskbarCreated");
         s_menu = LoadMenu(g_hInst, MAKEINTRESOURCE(IDR_MENU1));
         return DefWindowProc(hWnd, message, wParam, lParam);
@@ -248,9 +286,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         switch (LOWORD(wParam))
         {
         case ID_ROOT_ABOUT:
-            DialogBox(g_hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, &About);
+            DialogBox(g_hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, &about);
             break;
-
+        case ID_ROOT_REGISTERTOSTARTUPPROGRAM:
+            registerToShortcut(hWnd);
+            break;
         case ID_ROOT_EXIT:
             DestroyWindow(hWnd);
             break;
@@ -262,13 +302,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         PostQuitMessage(0);
         break;
     case WM_NOTIFYICON:
-        switch (lParam) {
+        switch (lParam)
+        {
         case WM_RBUTTONDOWN:
+        {
             POINT pt{};
             GetCursorPos(&pt);
             SetForegroundWindow(hWnd);
             TrackPopupMenu(GetSubMenu(s_menu, 0), TPM_LEFTALIGN, pt.x, pt.y, 0, hWnd, NULL);
-            break;
+        }
+        break;
+        default:
+            ;
         }
         return 0;
     default:
@@ -282,7 +327,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 void getProductAndVersion(LPWSTR szCopyright, UINT uCopyrightLen, LPWSTR szProductVersion, UINT uProductVersionLen)
 {
-    TCHAR szFilename[MAX_PATH]{ };
+    WCHAR szFilename[MAX_PATH]{};
     GetModuleFileName(nullptr, szFilename, ARRAYSIZE(szFilename));
 
     DWORD dwHandle;
@@ -297,23 +342,24 @@ void getProductAndVersion(LPWSTR szCopyright, UINT uCopyrightLen, LPWSTR szProdu
     LPWSTR pvCopyright{}, pvProductVersion{};
     UINT iCopyrightLen{}, iProductVersionLen{};
 
-    if (!VerQueryValue(data.data(), L"\\StringFileInfo\\040004b0\\LegalCopyright", (LPVOID*)&pvCopyright, &iCopyrightLen))
+    if (!VerQueryValue(data.data(), L"\\StringFileInfo\\040004b0\\LegalCopyright", (LPVOID*)&pvCopyright,
+        &iCopyrightLen))
         std::abort();
 
-    if (!VerQueryValue(data.data(), L"\\StringFileInfo\\040004b0\\ProductVersion", (LPVOID*)&pvProductVersion, &iProductVersionLen))
+    if (!VerQueryValue(data.data(), L"\\StringFileInfo\\040004b0\\ProductVersion", (LPVOID*)&pvProductVersion,
+        &iProductVersionLen))
         std::abort();
 
     wcsncpy_s(szCopyright, uCopyrightLen, pvCopyright, iCopyrightLen);
     wcsncpy_s(szProductVersion, uProductVersionLen, pvProductVersion, iProductVersionLen);
 }
 
-INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+INT_PTR CALLBACK about(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) noexcept
 {
     UNREFERENCED_PARAMETER(lParam);
     switch (message)
     {
-    case WM_INITDIALOG:
-    {
+    case WM_INITDIALOG: {
         WCHAR szCopyright[MAX_LOADSTRING]{};
         WCHAR szVersion[MAX_LOADSTRING]{};
 
