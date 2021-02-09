@@ -250,6 +250,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     }
 
     uninstallHook();
+    deleteNotifyIcon(hWnd, NOTIFY_UID);
 
     return (int)msg.wParam;
 }
@@ -258,7 +259,6 @@ void registerToShortcut(HWND hWnd)
 try
 {
     WCHAR targetPath[MAX_PATH]{};
-    THROW_IF_FAILED(E_FAIL);
     THROW_IF_WIN32_BOOL_FALSE(SHGetSpecialFolderPath(hWnd, targetPath, CSIDL_STARTUP, FALSE));
     StringCchCat(targetPath, ARRAYSIZE(targetPath), (L"\\"s + g_szTitle + L".lnk"s).c_str());
 
@@ -297,7 +297,7 @@ LRESULT CALLBACK wndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         default:
             return DefWindowProc(hWnd, message, wParam, lParam);
         }
-        break;
+        return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
         break;
